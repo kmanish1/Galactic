@@ -1,0 +1,10 @@
+# Local settings
+.env
+
+# Git-specific files
+.git
+
+# Custom exclusions
+node_modules/
+package-lock.json
+
