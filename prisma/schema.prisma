@@ -16,12 +16,10 @@ datasource db {
 model User {
   id                String   @id @default(auto()) @map("_id") @db.ObjectId
   discordId         String   @unique
-  auth_token        String?
-  refresh_auth_token String?
-  device_token      String?
-  status            String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+  privyId           String   @unique
+  solAddress        String   @unique
 }
 
 model ErrorLog {

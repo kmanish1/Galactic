@@ -3,6 +3,11 @@ const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
 const express = require("express");
 const axios = require("axios");
 const { PrismaClient } = require("@prisma/client");
+const { privysign } = require("./privy/privysign");
+const { getTokenDecimals, swap } = require("./privy/swap");
+const { A } = require("@raydium-io/raydium-sdk-v2/lib/raydium-64d94f53");
+const { transfer } = require("./privy/transfer");
+const { tokens} = require("./privy/portfolio");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -26,47 +31,13 @@ const commands = [
     description: "Initiate Google OAuth and authenticate.",
   },
   {
-    name: "wallets",
-    description: "Get your wallets.",
-  },
-  {
-    name: "createwallet",
-    description: "Create a new wallet.",
-  },
-  {
-    name: "portfolio",
-    description: "Get your portfolio details.",
-  },
-  {
-    name: "refresh_token",
-    description: "Refresh your access token.",
-  },
-  {
-    name: "logout",
-    description: "Logout from Okto.",
-  },
-  {
-    name: "userdetails",
-    description: "Get your user details.",
-  },
-  {
-    name: "networks",
-    description: "Get supported networks.",
-  },
-  {
-    name: "tokens",
-    description: "Get supported tokens.",
+    name: "wallet",
+    description: "Get your wallet and portfolio details",
   },
   {
     name: "transfer",
     description: "Transfer tokens.",
     options: [
-      {
-        name: "network",
-        description: "The blockchain network name.",
-        type: 3,
-        required: true,
-      },
       {
         name: "token_address",
         description: "The address of the token to transfer.",
@@ -88,8 +59,28 @@ const commands = [
     ],
   },
   {
-    name: "orders",
-    description: "Get your order history.",
+    name: "swap",
+    description: "Swap Tokens",
+    options: [
+      {
+        name: "input_mint",
+        description: "The address of the token to swap.",
+        type: 3,
+        required: true,
+      },
+      {
+        name: "output_mint",
+        description: "The address of the token to which you want to swap",
+        type: 10,
+        required: true,
+      },
+      {
+        name: "quantity",
+        description: "The amount of tokens to transfer.",
+        type: 3,
+        required: true,
+      },
+    ],
   },
 ];
 
@@ -108,46 +99,6 @@ const rest = new REST({ version: "10" }).setToken(
   }
 })();
 
-async function sendDiscordMessage(discordId, content) {
-  try {
-    const user = await client.users.fetch(discordId);
-    await user.send(content);
-  } catch (error) {
-    console.error(`Failed to send DM to user ${discordId}:`, error);
-  }
-}
-
-async function callOktoApi(discordId, method, endpoint, params = null) {
-  const user = await prisma.user.findUnique({
-    where: { discordId },
-  });
-
-  if (!user || !user.auth_token) {
-    throw new Error("Please login first using /login command");
-  }
-
-  const headers = {
-    Authorization: `Bearer ${user.auth_token}`,
-    "X-Api-Key": process.env.OKTO_CLIENT_API_KEY,
-    "Content-Type": "application/json",
-  };
-
-  try {
-    const response = await axios({
-      method,
-      url: `https://sandbox-api.okto.tech${endpoint}`,
-      headers,
-      data: params,
-    });
-    return response.data;
-  } catch (error) {
-    if (error.response?.status === 401) {
-      throw new Error("Session expired. Please login again using /login");
-    }
-    throw new Error(error.response?.data?.message || error.message);
-  }
-}
-
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isCommand()) return;
 
@@ -156,239 +107,104 @@ client.on("interactionCreate", async (interaction) => {
 
   try {
     switch (commandName) {
+      // case "walletaddress":
+      //   const walletUser = await prisma.user.findUnique({
+      //     where: { discordId },
+      //   });
+
+      //   if (!walletUser || !walletUser.auth_token) {
+      //     return interaction.reply({
+      //       content: "Please log in first using `/login`.",
+      //       ephemeral: true,
+      //     });
+      //   }
+      //   await interaction.reply({
+      //     content: `Your wallets:${walletUser.solAddress}`,
+      //     ephemeral: true,
+      //   });
+      //   break;
+
       case "login":
-        const redirectUri = `http://localhost:3000/auth/google/callback`;
-        const oauthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${
-          process.env.GOOGLE_CLIENT_ID
-        }&redirect_uri=${encodeURIComponent(
-          redirectUri
-        )}&response_type=code&scope=openid%20email%20profile&state=${discordId}`;
-
-        await prisma.user.upsert({
-          where: { discordId },
-          update: { status: "awaiting_auth" },
-          create: {
-            discordId,
-            status: "awaiting_auth",
-          },
-        });
-
-        try {
-          const user = await client.users.fetch(discordId);
-          await user.send(`Please log in using this link: ${oauthUrl}`);
-          await interaction.reply({
-            content: "I have sent you a DM with the login link.",
-            ephemeral: true,
-          });
-        } catch (error) {
-          await interaction.reply({
-            content:
-              "I couldn't send you a DM. Please check your privacy settings.",
-            ephemeral: true,
-          });
-        }
-        break;
-
-      case "wallets":
-        const walletUser = await prisma.user.findUnique({
-          where: { discordId },
-        });
-
-        if (!walletUser || !walletUser.auth_token) {
-          return interaction.reply({
-            content: "Please log in first using `/login`.",
-            ephemeral: true,
-          });
-        }
-        const wallets = await callOktoApi(discordId, "get", "/api/v1/wallet");
-        await interaction.reply({
-          content: `Your wallets: ${JSON.stringify(
-            wallets.data.wallets,
-            null,
-            2
-          )}`,
-          ephemeral: true,
-        });
-        break;
-
-      case "createwallet":
         const createWalletUser = await prisma.user.findUnique({
           where: { discordId },
         });
 
-        if (!createWalletUser || !createWalletUser.auth_token) {
-          return interaction.reply({
-            content: "Please log in first using `/login`.",
+        if (!createWalletUser) {
+          try {
+            const { id, address, chainType } = await privy.walletApi.create({
+              chainType: "solana",
+            });
+            await prisma.user.update({
+              where: { discordId },
+              data: {
+                privyId: id,
+                solAddress: address,
+              },
+            });
+            await interaction.reply({
+              content: `Wallet created successfully: ${address}`,
+              ephemeral: true,
+            });
+          } catch (error) {
+            console.error("Error creating wallet:", error);
+            await interaction.reply({
+              content: `Error creating wallet: ${error.message}`,
+              ephemeral: true,
+            });
+          }
+          break;
+        } else {
+          const addr = createWalletUser.solAddress;
+          await interaction.reply({
+            content: `Login Successful. Your address is \`${addr}\`  Topup your wallet with sol to cover gas fee`,
             ephemeral: true,
           });
+          break;
         }
 
-        try {
-          const result = await callOktoApi(discordId, "post", "/api/v1/wallet");
-          await interaction.reply({
-            content: `Wallet created successfully: ${JSON.stringify(
-              result.data.wallets,
-              null,
-              2
-            )}`,
-            ephemeral: true,
-          });
-        } catch (error) {
-          console.error("Error creating wallet:", error);
-          await interaction.reply({
-            content: `Error creating wallet: ${error.message}`,
-            ephemeral: true,
-          });
-        }
-        break;
-
-      case "portfolio":
+      case "wallet":
         const portfolioUser = await prisma.user.findUnique({
           where: { discordId },
         });
 
-        if (!portfolioUser || !portfolioUser.auth_token) {
+        if (!portfolioUser) {
           return interaction.reply({
             content: "Please log in first using `/login`.",
             ephemeral: true,
           });
         }
-        const portfolio = await callOktoApi(
-          discordId,
-          "get",
-          "/api/v1/portfolio"
-        );
+        const publicKey = portfolioUser.solAddress;
+        const tokens = await tokens(publicKey);
         await interaction.reply({
-          content: `Your portfolio: ${JSON.stringify(portfolio.data, null, 2)}`,
+          content: `Your Wallet Address : ${publicKey} Your portfolio: ${tokens}`,
           ephemeral: true,
         });
         break;
-
-      case "refresh_token":
-        const refreshTokenUser = await prisma.user.findUnique({
+      case "swap":
+        const user = await prisma.user.findUnique({
           where: { discordId },
         });
-
-        if (!refreshTokenUser || !refreshTokenUser.auth_token) {
+        if (!transferUser || !transferUser.auth_token) {
           return interaction.reply({
             content: "Please log in first using `/login`.",
             ephemeral: true,
           });
         }
-        const refreshResult = await callOktoApi(
-          discordId,
-          "post",
-          "/api/v1/refresh_token"
+        const input_mint = options.getString("input_mint");
+        const output_mint = options.getString("output_mint");
+        const volume = options.getString("quantity");
+        const token_decimals = await getTokenDecimals(input_mint);
+        const amount = volume * token_decimals;
+        const allTransactions = await swap(
+          user.solAddress,
+          input_mint,
+          output_mint,
+          amount
         );
-        await interaction.reply({
-          content: "Token refreshed successfully.",
-          ephemeral: true,
-        });
-        break;
 
-      case "logout":
-        const logoutUser = await prisma.user.findUnique({
-          where: { discordId },
-        });
-
-        if (!logoutUser || !logoutUser.auth_token) {
-          return interaction.reply({
-            content: "You are not logged in.",
-            ephemeral: true,
-          });
-        }
-
-        await callOktoApi(discordId, "post", "/api/v1/logout");
-        await prisma.user.update({
-          where: { discordId },
-          data: {
-            auth_token: null,
-            refresh_auth_token: null,
-            device_token: null,
-            status: "logged_out",
-          },
-        });
-
-        await interaction.reply({
-          content: "Successfully logged out from Okto.",
-          ephemeral: true,
-        });
-        break;
-
-      case "userdetails":
-        const userDetailsUser = await prisma.user.findUnique({
-          where: { discordId },
-        });
-
-        if (!userDetailsUser || !userDetailsUser.auth_token) {
-          return interaction.reply({
-            content: "Please log in first using `/login`.",
-            ephemeral: true,
-          });
-        }
-        const userDetails = await callOktoApi(
-          discordId,
-          "get",
-          "/api/v1/user_from_token"
+        await Promise.all(
+          allTransactions.map((_, i) => privysign(user.privyId, i))
         );
-        await interaction.reply({
-          content: `User details: ${JSON.stringify(userDetails.data, null, 2)}`,
-          ephemeral: true,
-        });
-        break;
-
-      case "networks":
-        const networksUser = await prisma.user.findUnique({
-          where: { discordId },
-        });
-
-        if (!networksUser || !networksUser.auth_token) {
-          return interaction.reply({
-            content: "Please log in first using `/login`.",
-            ephemeral: true,
-          });
-        }
-        const networks = await callOktoApi(
-          discordId,
-          "get",
-          "/api/v1/supported/networks"
-        );
-        await interaction.reply({
-          content: `Supported networks: ${JSON.stringify(
-            networks.data.network,
-            null,
-            2
-          )}`,
-          ephemeral: true,
-        });
-        break;
-
-      case "tokens":
-        const tokensUser = await prisma.user.findUnique({
-          where: { discordId },
-        });
-
-        if (!tokensUser || !tokensUser.auth_token) {
-          return interaction.reply({
-            content: "Please log in first using `/login`.",
-            ephemeral: true,
-          });
-        }
-        const tokens = await callOktoApi(
-          discordId,
-          "get",
-          "/api/v1/supported/tokens"
-        );
-        await interaction.reply({
-          content: `Supported tokens: ${JSON.stringify(
-            tokens.data.tokens,
-            null,
-            2
-          )}`,
-          ephemeral: true,
-        });
-        break;
-
       case "transfer":
         const transferUser = await prisma.user.findUnique({
           where: { discordId },
@@ -400,37 +216,24 @@ client.on("interactionCreate", async (interaction) => {
             ephemeral: true,
           });
         }
-        const transferResult = await callOktoApi(
-          discordId,
-          "post",
-          "/api/v1/transfer/tokens/execute",
-          {
-            network_name: options.getString("network"),
-            token_address: options.getString("token_address"),
-            quantity: options.getNumber("quantity"),
-            recipient_address: options.getString("recipient"),
-          }
+
+        const toAddress = options.getString("recipient");
+        const vol = options.getString("quantity");
+        const token_address = options.getString("token_address");
+        const decimals = await getTokenDecimals(token_address);
+        const quantity = vol * decimals;
+        const fromAddress = transferUser.solAddress;
+        const privyId = transferUser.privyId;
+        const transferRes = await transfer(
+          fromAddress,
+          toAddress,
+          quantity,
+          token_address
         );
-        await interaction.reply({
-          content: `Token transfer initiated. Order ID: ${transferResult.data.orderId}`,
-          ephemeral: true,
-        });
-        break;
 
-      case "orders":
-        const ordersUser = await prisma.user.findUnique({
-          where: { discordId },
-        });
-
-        if (!ordersUser || !ordersUser.auth_token) {
-          return interaction.reply({
-            content: "Please log in first using `/login`.",
-            ephemeral: true,
-          });
-        }
-        const orders = await callOktoApi(discordId, "get", "/api/v1/orders");
+        const sidfsfa = await privysign(privyId, transferRes);
         await interaction.reply({
-          content: `Your orders: ${JSON.stringify(orders.data.jobs, null, 2)}`,
+          content: `Token transfer initiated`,
           ephemeral: true,
         });
         break;
@@ -485,74 +288,6 @@ client.on("interactionCreate", async (interaction) => {
         },
       });
     }
-  }
-});
-
-app.get("/auth/google/callback", async (req, res) => {
-  const { code, state: discordId } = req.query;
-
-  if (!code || !discordId) {
-    return res.status(400).send("Invalid request");
-  }
-
-  try {
-    const tokenResponse = await axios.post(
-      "https://oauth2.googleapis.com/token",
-      null,
-      {
-        params: {
-          client_id: process.env.GOOGLE_CLIENT_ID,
-          client_secret: process.env.GOOGLE_CLIENT_SECRET,
-          code,
-          grant_type: "authorization_code",
-          redirect_uri: `http://localhost:3000/auth/google/callback`,
-        },
-      }
-    );
-
-    const idToken = tokenResponse.data.id_token;
-    if (!idToken) {
-      return res.status(400).send("Failed to retrieve id_token from Google");
-    }
-
-    try {
-      const oktoResponse = await axios.post(
-        "https://sandbox-api.okto.tech/api/v2/authenticate",
-        { id_token: idToken },
-        {
-          headers: {
-            "X-Api-Key": process.env.OKTO_CLIENT_API_KEY,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const authData = oktoResponse.data.data;
-      await prisma.user.update({
-        where: { discordId },
-        data: {
-          auth_token: authData.auth_token,
-          refresh_auth_token: authData.refresh_auth_token,
-          device_token: authData.device_token,
-          status: "authenticated",
-        },
-      });
-
-      await sendDiscordMessage(
-        discordId,
-        "You have been successfully authenticated with Okto!"
-      );
-
-      res.send(
-        "You have been successfully authenticated! You can now return to Discord."
-      );
-    } catch (oktoError) {
-      console.error("Okto API Error:", oktoError);
-      res.status(500).send("Okto authentication failed.");
-    }
-  } catch (error) {
-    console.error("Error during Google token exchange:", error);
-    res.status(500).send("Google token exchange failed.");
   }
 });
 
